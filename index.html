@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lakshya QR Scanner</title>
+<style>
+:root{--green:#0F3D33;--gold:#F2B705;--paper:#F4F6F5;--ink:#16231F;--line:#D9E0DD;--muted:#5E6F69;--ok:#1E7A46;--warn:#9A6700;--err:#B3261E}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+header{background:var(--green);color:#fff;padding:12px 14px;font-weight:700}
+header b{color:var(--gold)}header span{display:block;font-weight:400;font-size:13px;opacity:.85}
+main{max-width:520px;margin:0 auto;padding:14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
+label{display:block;font-weight:600;font-size:14px;margin:10px 0 4px}
+input{width:100%;padding:10px 12px;border:1px solid #BFCBC6;border-radius:8px;font:inherit}
+.btn{display:inline-block;background:var(--green);color:#fff;border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}
+.btn.alt{background:#fff;color:var(--green);border:1px solid var(--green)}
+.btn.block{width:100%;margin-top:14px}
+.bar{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+#reader{width:100%;border-radius:10px;overflow:hidden;background:#000;min-height:120px}
+#status{margin:10px 0;font-weight:600;color:var(--muted);text-align:center}
+.res{border-radius:10px;padding:14px;border:2px solid;background:#fff}
+.res h3{margin:0 0 10px;font-size:19px}
+.res.ok{border-color:var(--ok)}.res.ok h3{color:var(--ok)}
+.res.warn{border-color:var(--warn)}.res.warn h3{color:var(--warn)}
+.res.err{border-color:var(--err)}.res.err h3{color:var(--err)}
+.stu{display:flex;gap:14px;align-items:flex-start}
+.stu img{width:120px;height:150px;object-fit:cover;border-radius:10px;border:1px solid var(--line);background:#dfe7e3;flex:none}
+.stu dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:15px}.stu dt{color:var(--muted)}.stu dd{margin:0;font-weight:600}
+#count{text-align:center;color:var(--muted);font-size:14px;margin-top:10px}
+#msg{color:var(--err);font-weight:600;margin-top:8px}
+</style>
+</head>
+<body>
+<header><b>LAKSHYA</b> COACHING CENTRE<span>Live QR attendance scanner</span></header>
+<main>
+  <!-- Login (sirf tab dikhta hai jab main app se token nahi aaya) -->
+  <section id="loginBox" class="card" hidden>
+    <b>Teacher login</b>
+    <div id="apiWrap"><label for="apiIn">Web app URL (…/exec)</label><input id="apiIn" autocapitalize="none" placeholder="https://script.google.com/macros/s/…/exec"></div>
+    <label for="lu">Username</label><input id="lu" autocapitalize="none">
+    <label for="lp">Password</label><input id="lp" type="password">
+    <button class="btn block" id="loginBtn">Log in</button>
+    <div id="msg"></div>
+  </section>
+
+  <!-- Scanner -->
+  <section id="scanBox" hidden>
+    <div id="reader"></div>
+    <div id="status">Camera shuru ho raha hai…</div>
+    <div id="result"></div>
+    <div class="bar">
+      <button class="btn alt" id="camBtn">Stop camera</button>
+      <a class="btn alt" id="backLink" href="#">Back to dashboard</a>
+      <button class="btn alt" id="outBtn">Log out</button>
+    </div>
+    <div id="count"></div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script>
+(function () {
+'use strict';
+var $ = function (i) { return document.getElementById(i); };
+var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); };
+function sget(k) { try { return sessionStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function sset(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
+function lget(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function lset(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+var h = new URLSearchParams(location.hash.replace(/^#/, ''));
+var TOKEN = h.get('t') || sget('lcc_t');
+var API = h.get('a') || lget('lcc_api');
+if (h.get('t')) sset('lcc_t', TOKEN);
+if (h.get('a')) lset('lcc_api', API);
+if (location.hash) { try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
+
+var scanner = null, busy = false, lastCode = '', lastAt = 0, camOn = false, counter = 0;
+
+async function post(body) {
+  var r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
+  var t = await r.text();
+  try { return JSON.parse(t); }
+  catch (e) { throw new Error('Server ka jawab galat hai. Apps Script deployment "Who has access: Anyone" par honi chahiye aur New version deploy honi chahiye.'); }
+}
+function beep(ok) {
+  try {
+    var C = window.AudioContext || window.webkitAudioContext, c = new C(), o = c.createOscillator(), g = c.createGain();
+    o.connect(g); g.connect(c.destination); o.frequency.value = ok ? 880 : 300; g.gain.value = 0.15; o.start();
+    setTimeout(function () { o.stop(); c.close(); }, ok ? 150 : 350);
+  } catch (e) {}
+}
+function status(t) { $('status').textContent = t; }
+
+function showLogin(msg) {
+  stopCam();
+  $('scanBox').hidden = true; $('loginBox').hidden = false;
+  $('apiWrap').hidden = !!API;
+  $('msg').textContent = msg || '';
+}
+async function doLogin() {
+  var a = $('apiIn').value.trim() || API;
+  if (!/^https:\/\/script\.google\.com\/.*\/exec$/.test(a)) { $('msg').textContent = 'Sahi web app (…/exec) URL daalein.'; return; }
+  API = a; lset('lcc_api', API);
+  $('msg').textContent = 'Login ho raha hai…';
+  try {
+    var r = await post({ action: 'login', username: $('lu').value.trim(), password: $('lp').value });
+    if (!r.ok) { $('msg').textContent = r.msg || 'Login nahi hua.'; return; }
+    TOKEN = r.token; sset('lcc_t', TOKEN); $('lp').value = '';
+    showScan();
+  } catch (e) { $('msg').textContent = String(e.message || e); }
+}
+
+function showScan() {
+  $('loginBox').hidden = true; $('scanBox').hidden = false;
+  $('backLink').href = API || '#';
+  startCam();
+}
+async function startCam() {
+  if (!window.Html5Qrcode) { status('Scanner library load nahi hui. Internet check karein.'); return; }
+  if (camOn) return;
+  scanner = new Html5Qrcode('reader');
+  try {
+    await scanner.start({ facingMode: 'environment' },
+      { fps: 10, qrbox: function (w, hh) { var s = Math.floor(Math.min(w, hh) * 0.7); return { width: s, height: s }; } },
+      onDecode, function () {});
+    camOn = true; $('camBtn').textContent = 'Stop camera';
+    status('QR ko frame ke beech mein rakhein…');
+  } catch (e) {
+    scanner = null; camOn = false; $('camBtn').textContent = 'Start camera';
+    status('Camera nahi khula: ' + String((e && (e.message || e.name)) || e).slice(0, 120) +
+      ' — browser ke address bar (lock icon) se Camera ko Allow karein, phir "Start camera" dabayein.');
+  }
+}
+async function stopCam() {
+  var s = scanner; scanner = null; camOn = false;
+  if (s) { try { await s.stop(); s.clear(); } catch (e) {} }
+  $('camBtn').textContent = 'Start camera';
+}
+
+async function onDecode(text) {
+  var now = Date.now();
+  if (busy) return;
+  if (text === lastCode && now - lastAt < 4000) return;
+  busy = true; lastCode = text; lastAt = now;
+  status('Attendance check ho rahi hai…');
+  try {
+    var r = await post({ action: 'scan', token: TOKEN, code: text });
+    if (r && r.msg === 'SESSION_EXPIRED') { busy = false; return showLogin('Session khatam ho gaya. Dobara login karein.'); }
+    render(r);
+  } catch (e) {
+    render({ ok: false, msg: String(e.message || e) });
+  }
+  setTimeout(function () { busy = false; status('Agla QR scan karein…'); }, 1800);
+}
+
+function render(r) {
+  var cls, title, s = r.student;
+  if (!r.ok) { cls = 'err'; title = '✕ ' + esc(r.msg); }
+  else if (r.already) { cls = 'warn'; title = 'Attendance Already Marked Today'; }
+  else { cls = 'ok'; title = '✓ Attendance Marked Successfully'; counter++; }
+  var body = s ? '<div class="stu">' + (s.photo ? '<img src="' + esc(s.photo) + '" alt="Student photo">' : '') +
+    '<dl><dt>Name</dt><dd>' + esc(s.name) + '</dd><dt>Roll No.</dt><dd>' + esc(s.roll) + '</dd><dt>Reg. No.</dt><dd>' + esc(s.reg) +
+    '</dd><dt>Class</dt><dd>' + esc(s.cls) + '</dd><dt>Batch</dt><dd>' + esc(s.batch) + '</dd>' +
+    (r.time ? '<dt>Time</dt><dd>' + esc(r.time) + '</dd>' : '') + '</dl></div>' : '';
+  $('result').innerHTML = '<div class="res ' + cls + '"><h3>' + title + '</h3>' + body + '</div>';
+  $('count').textContent = 'Is session mein marked: ' + counter;
+  beep(r.ok && !r.already);
+  try { if (navigator.vibrate) navigator.vibrate(r.ok && !r.already ? 120 : [80, 60, 80]); } catch (e) {}
+}
+
+$('loginBtn').addEventListener('click', doLogin);
+$('lp').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+$('camBtn').addEventListener('click', function () { if (camOn) { stopCam(); status('Camera band hai.'); } else startCam(); });
+$('outBtn').addEventListener('click', function () { TOKEN = ''; sset('lcc_t', ''); showLogin(''); });
+
+if (TOKEN && API) showScan(); else showLogin('');
+})();
+</script>
+</body>
+</html>
